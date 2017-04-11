@@ -21,13 +21,11 @@ class NodeLink{
 }
 
 class Bytizer{
-	static byte[] convert(int i){
-		byte buf[] = new byte[4];
-		
-		buf[0] = (byte) (i >> 24);
-		buf[1] = (byte) (i >> 16);
-		buf[2] = (byte) (i >> 8);
-		buf[3] = (byte) (i);
+	static byte[] convert(byte buf[], int start, int i){		
+		buf[start]   = (byte) (i >> 24);
+		buf[start+1] = (byte) (i >> 16);
+		buf[start+2] = (byte) (i >> 8);
+		buf[start+3] = (byte) (i);
 		
 		return buf; 
 	} 
@@ -36,20 +34,20 @@ class Bytizer{
 class HelloSendThread extends Thread{
 	// Not reqd to be shared
 	int hello_interval;
-	int my_port;
+	int my_id;
 	InetAddress IPAddress;
-	int hello_pkt_size = 9;
+	int hello_pkt_size = 6;
 
 	// Shared
 	DatagramSocket socket;
 	HashMap<Integer, NodeLink> link_info;
 
 
-	HelloSendThread(int hi, DatagramSocket s, HashMap<Integer, NodeLink> l, int port){
+	HelloSendThread(int hi, DatagramSocket s, HashMap<Integer, NodeLink> l, int id){
 		hello_interval = hi;
 		socket = s;
 		link_info = l;
-		my_port = port;
+		my_id = id;
 		
 		try{
 			IPAddress = InetAddress.getByName("localhost");
@@ -61,12 +59,15 @@ class HelloSendThread extends Thread{
 	}
 
 	public void run(){
+		byte[] buf = new byte[hello_pkt_size];
+		
+		// 00 - HELLO msg code
+		buf[0] = 0; buf[1] = 0;
+		Bytizer.convert(buf, 2, 10000+my_id);
+
 		// ISSUE: how many times?
 		while(true){
 			for(int i: link_info.keySet()){
-				byte[] buf = new byte[hello_pkt_size];
-				// buf = "HELLO".getBytes() + Bytizer.convert(10000+i)
-
 				DatagramPacket hello_pkt = new DatagramPacket(buf, hello_pkt_size, IPAddress, 10000+i);
 				try{
 					socket.send(hello_pkt);				
@@ -84,6 +85,72 @@ class HelloSendThread extends Thread{
 				System.out.println("Unable to sleep!");
 				System.exit(1);
 			}
+		}
+	}
+}
+
+class RecvThread extends Thread{
+	// Doesnt need to be shares 
+	int nodeNum;
+	int my_id;
+
+	// Probably shares 
+	DatagramSocket socket;
+	HashMap<Integer, NodeLink> link_info;
+
+	RecvThread(DatagramSocket s, int n, int id, HashMap<Integer, NodeLink> li){
+		socket  = s;
+		nodeNum = n;
+		my_id 	= id;
+		link_info = li;
+	}
+
+	public void run(){
+		int max_length = (nodeNum-1)*8 + 12 + 2;
+ 		byte buf[] = new byte[max_length];
+
+		DatagramPacket recvd_pkt = new DatagramPacket(buf, max_length);
+		try{
+			socket.receive(recvd_pkt);
+		}
+		catch(IOException e){
+			System.out.println("Unable to recv pkts!");
+			System.exit(1);
+		}
+
+		// Received Hello Packet
+		if(buf[0] == 0 && buf[1] == 0){
+			// Make buffer for reply
+			int reply_size = 14;
+			byte[] reply = new byte[reply_size];
+			// 01 - HELLOREPLY msg
+			reply[0] = 0; reply[1] = 1;
+			Bytizer.convert(reply, 2, recvd_pkt.getPort());
+			Bytizer.convert(reply, 6, my_id+10000);
+
+			NodeLink neighborLink = link_info.get(recvd_pkt.getPort()-10000);
+			Bytizer.convert(reply, 10, 
+				new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC);
+
+			// Build and send hello reply pkt
+			DatagramPacket reply_pkt = new DatagramPacket(reply, reply_size);
+			try{
+				reply_pkt.setAddress(recvd_pkt.getAddress());
+				reply_pkt.setPort(recvd_pkt.getPort());
+				socket.send(reply_pkt);				
+			}
+			catch(IOException e){
+				System.out.println("Unable to send pkt!");
+				System.exit(1);
+			}
+		}
+		// Received Hello Reply Packet
+		else if(buf[0] == 0 && buf[1] == 0){
+
+		}
+		// Received LSA Packet
+		else{
+
 		}
 	}
 }
