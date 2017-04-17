@@ -1,5 +1,8 @@
 all:
-	cd Code && javac simulator.java
+	javac -d bin/ Code/simulator.java
+
+run:
+	cd bin && java simulator -i 1 -f ../Input/ipfile -d
 
 clean:
-	rm -f Code/*.class Code/output*
+	rm -f bin/*.class Code/output*

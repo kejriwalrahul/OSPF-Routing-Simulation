@@ -8,18 +8,61 @@ import java.net.*;
 import java.util.*;
 import java.lang.*;
 
+/*
+	Contains information pertaining to a single link
+*/
 class NodeLink{
 	int idx;
 	int minC;
 	int maxC;
 
+	int curr_cost;
+
 	NodeLink(int i, int m, int n){
 		idx  = i;
 		minC = m;
 		maxC = n;
+
+		curr_cost = Integer.MAX_VALUE;
+	}
+
+	public String toString(){
+		return "Index: " + Integer.toString(idx) 
+			+ ", minC: " + Integer.toString(minC)
+			+ ", maxC: " + Integer.toString(maxC) 
+			+ ", curr_cost: " + Integer.toString(curr_cost) 
+			+ " ";
 	}
 }
 
+/*
+	Holds routing info for each destination node
+*/
+class RoutingPath{
+	int dest;
+	int next_hop;
+	int total_cost;
+
+	ArrayList<Integer> path;
+
+	RoutingPath(int d){
+		dest = d;
+		next_hop = -1;
+		total_cost = -1;
+		
+		path = new ArrayList<Integer>();
+	}
+
+	public void reset(){
+		next_hop = -1;
+		total_cost = -1;
+		path.clear();
+	}
+}
+
+/*
+	Class to convert integer to bytes and store it in an existing byte array 'buf' from 'start' index
+*/
 class Bytizer{
 	static byte[] convert(byte buf[], int start, int i){		
 		buf[start]   = (byte) (i >> 24);
@@ -29,31 +72,53 @@ class Bytizer{
 		
 		return buf; 
 	} 
+
+	static int invert(byte buf[], int start){
+		int res;
+
+		res  = (int)(buf[start])   << 24;
+		res |= (int)(buf[start+1]) << 16;
+		res |= (int)(buf[start+2]) <<  8;
+		res |= (int)(buf[start+3]);
+
+		return res;
+	}
 }
 
+/*
+	Thread for sending Hello Messages periodically
+*/
 class HelloSendThread extends Thread{
 	// Not reqd to be shared
 	int hello_interval;
 	int my_id;
 	InetAddress IPAddress;
-	int hello_pkt_size = 6;
+	int hello_pkt_size = 5;
+
+	long startTime;
+	boolean debug;
 
 	// Shared
 	DatagramSocket socket;
 	HashMap<Integer, NodeLink> link_info;
 
-
-	HelloSendThread(int hi, DatagramSocket s, HashMap<Integer, NodeLink> l, int id){
+	// Constructing the thread
+	HelloSendThread(int hi, DatagramSocket s, HashMap<Integer, NodeLink> l, int id, long sT, boolean d){
+		// Acquire Params
 		hello_interval = hi;
+		my_id = id;
+		startTime = sT;
+		debug = d;
+
 		socket = s;
 		link_info = l;
-		my_id = id;
 		
 		try{
 			IPAddress = InetAddress.getByName("localhost");
 		}
 		catch(UnknownHostException e){
-			System.out.println("Could not find IP!");
+			System.out.println("Error in getting IP Address!");
+			e.printStackTrace();
 			System.exit(1);
 		}
 	}
@@ -61,25 +126,29 @@ class HelloSendThread extends Thread{
 	public void run(){
 		byte[] buf = new byte[hello_pkt_size];
 		
-		// 00 - HELLO msg code
-		buf[0] = 0; buf[1] = 0;
-		Bytizer.convert(buf, 2, 10000+my_id);
+		// 0 - HELLO msg code
+		buf[0] = 0;
+		Bytizer.convert(buf, 1, 10000+my_id);
 
 		// ISSUE: how many times?
 		while(true){
 			for(int i: link_info.keySet()){
 				DatagramPacket hello_pkt = new DatagramPacket(buf, hello_pkt_size, IPAddress, 10000+i);
+				
+				if(debug)	
+					System.out.println("Helloing " + Integer.toString(10000+i) + " at t=" + 
+						Long.toString((System.nanoTime() - startTime)/1000));
+				
 				try{
 					socket.send(hello_pkt);				
 				}
 				catch(IOException e){
-					System.out.println("Unable to send pkt!");
-					System.exit(1);
+					System.out.println("Unable to send HELLO pkt! Possibly Dead Peer Router!");
 				}
 			}
 
 			try{
-				Thread.sleep(hello_interval);		
+				Thread.sleep(hello_interval * 1000);		
 			}
 			catch(InterruptedException e){
 				System.out.println("Unable to sleep!");
@@ -89,71 +158,301 @@ class HelloSendThread extends Thread{
 	}
 }
 
+/*
+	Thread to process received messages:
+		Hello Msgs
+		HelloReply Msgs
+		LSA Msgs
+*/
 class RecvThread extends Thread{
-	// Doesnt need to be shares 
+	// Doesnt need to be shared 
 	int nodeNum;
 	int my_id;
+	HashMap<Integer, Integer>  last_seq_seen = new HashMap<Integer, Integer>();
 
-	// Probably shares 
+	InetAddress IPAddress;
+	long startTime;
+	boolean debug;
+
+	// Probably shared
 	DatagramSocket socket;
 	HashMap<Integer, NodeLink> link_info;
+	HashMap<Integer, HashMap<Integer, Integer>> adj_list;
 
-	RecvThread(DatagramSocket s, int n, int id, HashMap<Integer, NodeLink> li){
+	// Construct thread
+	RecvThread(DatagramSocket s, int n, int id, HashMap<Integer, NodeLink> li, long sT, boolean	d, 
+		HashMap<Integer, HashMap<Integer, Integer>> al){
 		socket  = s;
 		nodeNum = n;
 		my_id 	= id;
 		link_info = li;
-	}
+		adj_list  = al;
+		startTime = sT;
+		debug = d;
 
-	public void run(){
-		int max_length = (nodeNum-1)*8 + 12 + 2;
- 		byte buf[] = new byte[max_length];
-
-		DatagramPacket recvd_pkt = new DatagramPacket(buf, max_length);
 		try{
-			socket.receive(recvd_pkt);
+			IPAddress = InetAddress.getByName("localhost");
 		}
-		catch(IOException e){
-			System.out.println("Unable to recv pkts!");
+		catch(UnknownHostException e){
+			System.out.println("Error in getting IP Address!");
+			e.printStackTrace();
 			System.exit(1);
 		}
 
-		// Received Hello Packet
-		if(buf[0] == 0 && buf[1] == 0){
-			// Make buffer for reply
-			int reply_size = 14;
-			byte[] reply = new byte[reply_size];
-			// 01 - HELLOREPLY msg
-			reply[0] = 0; reply[1] = 1;
-			Bytizer.convert(reply, 2, recvd_pkt.getPort());
-			Bytizer.convert(reply, 6, my_id+10000);
+		for(int i=0; i<nodeNum; i++)
+			last_seq_seen.put(i, -1);
+	}
 
-			NodeLink neighborLink = link_info.get(recvd_pkt.getPort()-10000);
-			Bytizer.convert(reply, 10, 
-				new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC);
+	public void run(){
+		// Build recv packet
+		int max_length = (nodeNum-1)*8 + 12 + 1;
+ 		byte buf[] = new byte[max_length];
 
-			// Build and send hello reply pkt
-			DatagramPacket reply_pkt = new DatagramPacket(reply, reply_size);
+		DatagramPacket recvd_pkt = new DatagramPacket(buf, max_length);
+
+		while(true){
+			if(debug)	System.out.println("Attempting read!");
+
+			// Accept a packet
 			try{
-				reply_pkt.setAddress(recvd_pkt.getAddress());
-				reply_pkt.setPort(recvd_pkt.getPort());
-				socket.send(reply_pkt);				
+				socket.receive(recvd_pkt);
 			}
 			catch(IOException e){
-				System.out.println("Unable to send pkt!");
+				System.out.println("Unable to recv pkts!");
+				e.printStackTrace();
 				System.exit(1);
 			}
-		}
-		// Received Hello Reply Packet
-		else if(buf[0] == 0 && buf[1] == 0){
 
-		}
-		// Received LSA Packet
-		else{
+			/*
+				Dispatch Packets
+			*/
 
+			// Received Hello Packet
+			if(buf[0] == 0){
+
+				// Make buffer for reply
+				int reply_size = 13;
+				byte[] reply = new byte[reply_size];
+				
+				// 1 - HELLOREPLY msg
+				reply[0] = 1;
+				Bytizer.convert(reply, 1, my_id+10000);
+				Bytizer.convert(reply, 5, recvd_pkt.getPort());
+
+				NodeLink neighborLink = link_info.get(recvd_pkt.getPort()-10000);
+				Bytizer.convert(reply, 9, 
+					new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC);
+
+				// Build and send hello reply pkt
+				DatagramPacket reply_pkt = new DatagramPacket(reply, reply_size);
+				try{
+					reply_pkt.setAddress(recvd_pkt.getAddress());
+					reply_pkt.setPort(recvd_pkt.getPort());
+					socket.send(reply_pkt);				
+				}
+				catch(IOException e){
+					System.out.println("Unable to send pkt!");
+					System.exit(1);
+				}
+			}
+			// Received Hello Reply Packet
+			else if(buf[0] == 1){
+				link_info.get(Bytizer.invert(buf, 1)-10000).curr_cost = Bytizer.invert(buf,9);
+			}
+			// Received LSA Packet
+			else{
+				int senderNode = Bytizer.invert(buf, 1); 
+				int seq_no     = Bytizer.invert(buf, 5); 
+				
+				// If already seen
+				if(seq_no <= last_seq_seen.get(senderNode-10000)){
+					if(debug)	
+						System.out.println("Received already seen LSA pkt from " + Integer.toString(senderNode) + 
+							" with seq_no: " + Integer.toString(seq_no));
+				}
+				// If not yet seen
+				else{
+					// Update last seen
+					last_seq_seen.put(senderNode-10000, seq_no);
+				
+					// Store info
+					int no_of_entries = Bytizer.invert(buf,9);
+					HashMap<Integer, Integer> sender_adj_list = adj_list.get(senderNode-10000);
+					for(int i=0; i<no_of_entries; i++){
+						int sender_neighbour = Bytizer.invert(buf, 13+8*i);
+						int sender_neighbour_cost = Bytizer.invert(buf, 17+8*i);
+						sender_adj_list.put(sender_neighbour, sender_neighbour_cost);	
+					}
+
+					// Broadcast info
+					for(int i: link_info.keySet()){
+						DatagramPacket lsa_forward = new DatagramPacket(buf, recvd_pkt.getLength(), IPAddress, i+10000);
+
+						if(debug)	
+							System.out.println("Forwarding LSA from " + senderNode + " to " + Integer.toString(10000+i) + " at t=" + 
+								Long.toString((System.nanoTime() - startTime)/1000));
+						
+						try{
+							socket.send(lsa_forward);				
+						}
+						catch(IOException e){
+							System.out.println("Unable to forward LSA pkt! Possibly Dead Peer Router!");
+						}
+	
+					}
+
+				}
+			}	
+		}
+
+	}
+}
+
+/*
+	Thread for sending out LSA packets
+*/
+class LSASendThread extends	Thread{
+	// Doesnt need to be shared
+	int lsai;
+	int self_idx;
+
+	long startTime;
+	boolean debug;
+
+	InetAddress IPAddress;
+	int LSA_PKT_SIZE;
+	int no_of_neighbours;
+	int last_seq_sent = 0;
+
+	// Shared
+	DatagramSocket socket;
+	HashMap<Integer, NodeLink> link_info;
+
+	LSASendThread(DatagramSocket s, int l, long sT, HashMap<Integer, NodeLink> li, int idx, boolean d){
+		lsai = l;
+		self_idx = idx;
+		startTime = sT;
+		debug = d;
+
+		socket = s;
+		link_info = li;
+
+		no_of_neighbours = link_info.keySet().size();
+		LSA_PKT_SIZE = 13 + 8 * no_of_neighbours;
+
+		try{
+			IPAddress = InetAddress.getByName("localhost");
+		}
+		catch(UnknownHostException e){
+			System.out.println("Error in getting IP Address!");
+			e.printStackTrace();
+			System.exit(1);
+		}
+	}
+
+	public void run(){
+		byte buf[] = new byte[LSA_PKT_SIZE];
+		// 2 - LSA msg
+		buf[0] = 2;
+		Bytizer.convert(buf, 1, self_idx+10000);
+		Bytizer.convert(buf, 9, no_of_neighbours);
+
+		while(true){
+			// Sleep for lsai
+			try{
+				Thread.sleep(lsai * 1000);		
+			}
+			catch(InterruptedException e){
+				System.out.println("Unable to sleep!");
+				System.exit(1);
+			}
+
+			// Build LSA pkt
+			Bytizer.convert(buf, 5, last_seq_sent++);
+
+			Object[] keys_arr = link_info.keySet().toArray();
+			for(int i=0; i<no_of_neighbours; i++){
+				Bytizer.convert(buf, 13+8*i, link_info.get(keys_arr[i]).idx + 10000);
+				Bytizer.convert(buf, 17+8*i, link_info.get(keys_arr[i]).curr_cost);
+			}
+
+			// BroadCast LSA to neighbours
+			for(Object iter: keys_arr){
+				int i = (int) iter;
+
+				DatagramPacket lsa_pkt = new DatagramPacket(buf, LSA_PKT_SIZE, IPAddress, i + 10000);
+					
+				if(debug)	
+					System.out.println("LSA Advertised to " + Integer.toString(10000+i) + " at t=" + 
+						Long.toString((System.nanoTime() - startTime)/1000));
+				
+				try{
+					socket.send(lsa_pkt);				
+				}
+				catch(IOException e){
+					System.out.println("Unable to send LSA pkt! Possibly Dead Peer Router!");
+				}
+			}
+		}
+
+	}
+}
+
+/*
+	Thread to compute shortest path info
+*/
+class ShortestPathThread extends Thread{
+	// Doesnt need to be shared
+	String ofile;
+	int spfi;
+	int nodeNum;
+	int self_idx;
+
+	long startTime;
+	boolean debug;
+
+	// Possibly Shared
+	HashMap<Integer, NodeLink> link_info;
+	HashMap<Integer, HashMap<Integer, Integer>> adj_list;
+
+	// Final routing info
+	HashMap<Integer, RoutingPath> routes = new HashMap<Integer, RoutingPath>();
+
+	// Construct thread
+	ShortestPathThread(String of, int s, long sT, boolean d, HashMap<Integer, NodeLink> li
+		, HashMap<Integer, HashMap<Integer, Integer>> al, int nN, int si){
+		
+		startTime = sT;
+		link_info = li;
+		adj_list  = al;
+		nodeNum   = nN;
+		self_idx  = si;
+		ofile = of;
+		spfi  = s;
+		debug = d;
+
+		for(int i=0; i<nodeNum; i++)
+			if(i != self_idx)
+				routes.put(i, new RoutingPath(i));
+	}
+
+	public void run(){
+		while(true){
+			// Sleep awhile
+			try{
+				Thread.sleep(spfi * 1000);		
+			}
+			catch(InterruptedException e){
+				System.out.println("Unable to sleep!");
+				System.exit(1);
+			}
+
+			// Compute shortest paths
+			
 		}
 	}
 }
+
 
 /*
 	Class that simulates a single node
@@ -172,6 +471,12 @@ class NodeSimulator{
 
 	// Node Socket
 	DatagramSocket socket;
+
+	// Router start time
+	long startTime;
+
+	// Adjacency List of other nodes
+	HashMap<Integer, HashMap<Integer, Integer>> adj_list = new HashMap<Integer, HashMap<Integer, Integer>>();
 
 	/*
 		Constructs the simulated Node
@@ -196,6 +501,12 @@ class NodeSimulator{
 			System.exit(1);
 		}
 
+		// Test read contents
+		if(debug){
+			System.out.print("link_info: ");
+			System.out.println(link_info);
+		}	
+
 		// Setup sockets and packets
 		try{
 			socket = new DatagramSocket(10000 + idx);
@@ -205,6 +516,14 @@ class NodeSimulator{
 			e.printStackTrace();
 			System.exit(1);
 		}
+
+		// Build blank adjacency lists
+		for(i=0; i<nodeNum; i++)
+			if(i != idx)
+				adj_list.put(i, new HashMap<Integer, Integer>());
+
+		// Initialize router start time
+		startTime = System.nanoTime();
 
 		// Start the node
 		start_node();
@@ -239,6 +558,32 @@ class NodeSimulator{
 
 	void start_node(){
 
+		// Construct Threads
+		HelloSendThread helloThread = new HelloSendThread(hi, socket, link_info, idx, startTime, debug);
+		RecvThread      recvrThread = new RecvThread(socket, nodeNum, idx, link_info, startTime, debug, adj_list);
+		LSASendThread   lsaThread   = new LSASendThread(socket, lsai, startTime, link_info, idx, debug);
+		ShortestPathThread spfThread= new ShortestPathThread(ofile, spfi, startTime, debug, link_info, adj_list, nodeNum, idx);
+
+		// Fire up threads here
+		helloThread.start();
+		lsaThread.start();
+		recvrThread.start();
+		spfThread.start();
+
+		// Join threads
+		try{
+			helloThread.join();
+			lsaThread.join();
+			recvrThread.join();
+			spfThread.join();			
+		}
+		catch(InterruptedException e){
+			System.out.println("Unable to join threads!");
+			e.printStackTrace();
+			System.exit(1);
+		}
+
+		// Close router socket on end
 		socket.close();
 	}
 }
