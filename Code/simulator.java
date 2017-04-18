@@ -40,23 +40,21 @@ class NodeLink{
 */
 class RoutingPath{
 	int dest;
-	int next_hop;
-	int total_cost;
-
-	ArrayList<Integer> path;
+	int parent;
+	int path_cost;
+	boolean done;
 
 	RoutingPath(int d){
 		dest = d;
-		next_hop = -1;
-		total_cost = -1;
-		
-		path = new ArrayList<Integer>();
+		parent = -1;
+		path_cost = Integer.MAX_VALUE;
+		done = false;
 	}
 
 	public void reset(){
-		next_hop = -1;
-		total_cost = -1;
-		path.clear();
+		parent = -1;
+		path_cost = Integer.MAX_VALUE;
+		done = false;
 	}
 }
 
@@ -137,7 +135,7 @@ class HelloSendThread extends Thread{
 				
 				if(debug)	
 					System.out.println("Helloing " + Integer.toString(10000+i) + " at t=" + 
-						Long.toString((System.nanoTime() - startTime)/1000));
+						Long.toString((System.nanoTime() - startTime)/1000_000_000));
 				
 				try{
 					socket.send(hello_pkt);				
@@ -230,6 +228,9 @@ class RecvThread extends Thread{
 			// Received Hello Packet
 			if(buf[0] == 0){
 
+				if(debug)
+					System.out.println("Received HELLO pkt from " + Integer.toString(recvd_pkt.getPort()-10000));
+
 				// Make buffer for reply
 				int reply_size = 13;
 				byte[] reply = new byte[reply_size];
@@ -240,8 +241,11 @@ class RecvThread extends Thread{
 				Bytizer.convert(reply, 5, recvd_pkt.getPort());
 
 				NodeLink neighborLink = link_info.get(recvd_pkt.getPort()-10000);
-				Bytizer.convert(reply, 9, 
-					new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC);
+				int new_cost = new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC; 
+				Bytizer.convert(reply, 9, new_cost);
+
+				// Update adj_list fr self node
+				adj_list.get(my_id).put(recvd_pkt.getPort()-10000, new_cost);
 
 				// Build and send hello reply pkt
 				DatagramPacket reply_pkt = new DatagramPacket(reply, reply_size);
@@ -257,12 +261,25 @@ class RecvThread extends Thread{
 			}
 			// Received Hello Reply Packet
 			else if(buf[0] == 1){
-				link_info.get(Bytizer.invert(buf, 1)-10000).curr_cost = Bytizer.invert(buf,9);
+				if(debug)
+					System.out.println("Received HELLOREPLY pkt from " 
+						+ Integer.toString(Bytizer.invert(buf, 1)-10000) );
+
+				int curr_cost = Bytizer.invert(buf,9);
+				link_info.get(Bytizer.invert(buf, 1)-10000).curr_cost = curr_cost;
+				adj_list.get(my_id).put(recvd_pkt.getPort()-10000, curr_cost);
 			}
 			// Received LSA Packet
 			else{
 				int senderNode = Bytizer.invert(buf, 1); 
 				int seq_no     = Bytizer.invert(buf, 5); 
+
+				if(debug)
+					System.out.println("Received LSA pkt from " 
+						+ Integer.toString(senderNode) 
+						+ " and seq_no: " 
+						+ Integer.toString(seq_no));
+
 				
 				// If already seen
 				if(seq_no <= last_seq_seen.get(senderNode-10000)){
@@ -288,9 +305,12 @@ class RecvThread extends Thread{
 					for(int i: link_info.keySet()){
 						DatagramPacket lsa_forward = new DatagramPacket(buf, recvd_pkt.getLength(), IPAddress, i+10000);
 
+						if(i+10000 == recvd_pkt.getPort())
+							continue;
+
 						if(debug)	
-							System.out.println("Forwarding LSA from " + senderNode + " to " + Integer.toString(10000+i) + " at t=" + 
-								Long.toString((System.nanoTime() - startTime)/1000));
+							System.out.println("Forwarding LSA from " + senderNode + " to " + Integer.toString(i+10000) + " at t=" + 
+								Long.toString((System.nanoTime() - startTime)/1000_000_000));
 						
 						try{
 							socket.send(lsa_forward);				
@@ -384,7 +404,7 @@ class LSASendThread extends	Thread{
 					
 				if(debug)	
 					System.out.println("LSA Advertised to " + Integer.toString(10000+i) + " at t=" + 
-						Long.toString((System.nanoTime() - startTime)/1000));
+						Long.toString((System.nanoTime() - startTime)/1000_000_000));
 				
 				try{
 					socket.send(lsa_pkt);				
@@ -432,13 +452,29 @@ class ShortestPathThread extends Thread{
 		debug = d;
 
 		for(int i=0; i<nodeNum; i++)
-			if(i != self_idx)
-				routes.put(i, new RoutingPath(i));
+			routes.put(i, new RoutingPath(i));
+	}
+
+	String find_path(RoutingPath r, boolean last){
+		String parent_path;
+
+		if(r.parent == -1) 
+			parent_path = "1-";
+		else
+			parent_path = find_path(routes.get(r.parent), true);
+		
+		parent_path += r.dest;
+		if(!last)
+			parent_path += "-";
+
+		return parent_path; 
 	}
 
 	public void run(){
 		while(true){
-			// Sleep awhile
+			/*
+				Step 1: Sleep for spfi
+			*/
 			try{
 				Thread.sleep(spfi * 1000);		
 			}
@@ -447,8 +483,93 @@ class ShortestPathThread extends Thread{
 				System.exit(1);
 			}
 
-			// Compute shortest paths
-			
+			/*
+				Step 2: Finding shortest paths
+			*/
+
+			// Clear earlier paths
+			for(int i=0; i<nodeNum; i++)
+				routes.get(i).reset();
+
+			// Define comparator for Priority Queue
+			Comparator<RoutingPath> RoutingPathComparator = new Comparator<RoutingPath>() {
+			    @Override
+			    public int compare(RoutingPath left, RoutingPath right) {
+			        return left.path_cost - right.path_cost;
+			    }
+			};
+
+			// Initialize Priority Queue
+			PriorityQueue<RoutingPath> pQ = new PriorityQueue<RoutingPath>(nodeNum, RoutingPathComparator);
+			// Add root node
+			routes.get(self_idx).path_cost = 0;
+			pQ.add(routes.get(self_idx));
+
+			// Iterate over priority Queue
+			while(pQ.size() != 0){
+
+				// Get head of pQ
+				RoutingPath curr_min = pQ.poll();
+				// Mark it as final
+				curr_min.done = true;
+				if(debug)
+					System.out.println("current shortest path for " + Integer.toString(curr_min.dest));
+
+				// Iterate over neighbors
+				for(int i: adj_list.get(curr_min.dest).keySet()){
+					// Get neighbour info
+					RoutingPath neighbour_route = routes.get(i);
+					if(debug)
+						System.out.println("neighbor " 
+							+ Integer.toString(i));
+					
+					// If the path to this node is final, skip
+					if(neighbour_route.done)
+						continue;
+
+					// If a shorter path can be achieved via current node, modify path to neighbor 
+					// and update the pQ
+					if(neighbour_route.path_cost > curr_min.path_cost + adj_list.get(curr_min.dest).get(i)){
+						pQ.remove(neighbour_route);
+						neighbour_route.parent = curr_min.dest;
+						neighbour_route.path_cost = curr_min.path_cost + adj_list.get(curr_min.dest).get(i);
+						pQ.add(neighbour_route);
+					}
+				}				
+			} 
+		
+			/*
+				Step 3: Write to file
+			*/
+
+			if(debug)
+				System.out.println("Writing known routes to file");
+
+			try{
+				FileWriter opfile = new FileWriter(ofile);
+				opfile.write("Routing Table for Node No. " + Integer.toString(self_idx) + " at Time " 
+					+ (System.nanoTime() - startTime)/1000_000_000 + "\n");
+				
+				opfile.write(String.format("%-5s%-10s%-5s\n", "Dest", "Path", "Cost"));
+				for(int i=0; i<nodeNum; i++){
+					RoutingPath curr_route = routes.get(i);
+					if(curr_route.path_cost == Integer.MAX_VALUE)
+						continue;
+
+					if(debug)
+						System.out.println("writing shortest path for " + Integer.toString(curr_route.dest));
+					
+					opfile.write(String.format("%-5d%-10s%-5d\n", curr_route.dest, 
+						find_path(curr_route, true), curr_route.path_cost));
+				}
+
+				opfile.close();
+			}
+			catch(IOException e){
+				System.out.println("Error in writing routing tables!");
+				e.printStackTrace();
+				System.exit(1);
+			}
 		}
 	}
 }
@@ -519,8 +640,10 @@ class NodeSimulator{
 
 		// Build blank adjacency lists
 		for(i=0; i<nodeNum; i++)
-			if(i != idx)
-				adj_list.put(i, new HashMap<Integer, Integer>());
+			adj_list.put(i, new HashMap<Integer, Integer>());
+
+		for(int j:link_info.keySet())
+			adj_list.get(idx).put(j, Integer.MAX_VALUE);
 
 		// Initialize router start time
 		startTime = System.nanoTime();
