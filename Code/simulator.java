@@ -74,10 +74,10 @@ class Bytizer{
 	static int invert(byte buf[], int start){
 		int res;
 
-		res  = (int)(buf[start])   << 24;
-		res |= (int)(buf[start+1]) << 16;
-		res |= (int)(buf[start+2]) <<  8;
-		res |= (int)(buf[start+3]);
+		res  = ((int)(buf[start  ]) & 0xff) << 24;
+		res |= ((int)(buf[start+1]) & 0xff) << 16;
+		res |= ((int)(buf[start+2]) & 0xff) <<  8;
+		res |=  (int)(buf[start+3]  & 0xff);
 
 		return res;
 	}
@@ -296,7 +296,7 @@ class RecvThread extends Thread{
 					int no_of_entries = Bytizer.invert(buf,9);
 					HashMap<Integer, Integer> sender_adj_list = adj_list.get(senderNode-10000);
 					for(int i=0; i<no_of_entries; i++){
-						int sender_neighbour = Bytizer.invert(buf, 13+8*i);
+						int sender_neighbour = Bytizer.invert(buf, 13+8*i)-10000;
 						int sender_neighbour_cost = Bytizer.invert(buf, 17+8*i);
 						sender_adj_list.put(sender_neighbour, sender_neighbour_cost);	
 					}
@@ -375,7 +375,6 @@ class LSASendThread extends	Thread{
 		// 2 - LSA msg
 		buf[0] = 2;
 		Bytizer.convert(buf, 1, self_idx+10000);
-		Bytizer.convert(buf, 9, no_of_neighbours);
 
 		while(true){
 			// Sleep for lsai
@@ -391,10 +390,29 @@ class LSASendThread extends	Thread{
 			Bytizer.convert(buf, 5, last_seq_sent++);
 
 			Object[] keys_arr = link_info.keySet().toArray();
-			for(int i=0; i<no_of_neighbours; i++){
-				Bytizer.convert(buf, 13+8*i, link_info.get(keys_arr[i]).idx + 10000);
-				Bytizer.convert(buf, 17+8*i, link_info.get(keys_arr[i]).curr_cost);
+			int k = 0;
+			for(int i=0, j=13; i<no_of_neighbours; i++, j+=8, k++){
+				if(link_info.get(keys_arr[i]).curr_cost == Integer.MAX_VALUE){
+					j -= 8;
+					k --;
+					continue;
+				}
+
+				Bytizer.convert(buf, j, link_info.get(keys_arr[i]).idx + 10000);
+				Bytizer.convert(buf, j+4, link_info.get(keys_arr[i]).curr_cost);
 			}
+			Bytizer.convert(buf, 9, k);
+
+			/*
+			System.out.println("LSA pkt: ");
+			System.out.print((int)buf[0]);			
+			System.out.print(" ");			
+			for(int i=1;i<LSA_PKT_SIZE;i+=4){
+				System.out.print(Bytizer.invert(buf, i));			
+				System.out.print(" ");			
+			}
+			System.out.println("");
+			*/
 
 			// BroadCast LSA to neighbours
 			for(Object iter: keys_arr){
@@ -456,12 +474,10 @@ class ShortestPathThread extends Thread{
 	}
 
 	String find_path(RoutingPath r, boolean last){
-		String parent_path;
+		String parent_path = "";
 
-		if(r.parent == -1) 
-			parent_path = "1-";
-		else
-			parent_path = find_path(routes.get(r.parent), true);
+		if(r.parent != -1) 
+			parent_path = find_path(routes.get(r.parent), false);
 		
 		parent_path += r.dest;
 		if(!last)
@@ -673,9 +689,9 @@ class NodeSimulator{
 			maxC = Integer.parseInt(tokens[3]);
 
 			if(i == idx)
-				link_info.put(j, new NodeLink(10000+j, minC, maxC));
+				link_info.put(j, new NodeLink(j, minC, maxC));
 			else if(j == idx)
-				link_info.put(i, new NodeLink(10000+i, minC, maxC));
+				link_info.put(i, new NodeLink(i, minC, maxC));
 		}
 	}
 
