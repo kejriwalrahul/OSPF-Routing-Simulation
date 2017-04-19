@@ -1,0 +1,10 @@
+Routing Table for Node No. 6 at Time 40
+Dest Path      Cost 
+0    6-7-0     11   
+1    6-7-0-1   16   
+2    6-5-4-3-2 21   
+3    6-5-4-3   16   
+4    6-5-4     11   
+5    6-5       6    
+6    6         0    
+7    6-7       5    

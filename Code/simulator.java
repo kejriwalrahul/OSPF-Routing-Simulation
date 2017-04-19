@@ -641,6 +641,7 @@ class NodeSimulator{
 		}
 		catch(Exception e){
 			System.out.println("Unable to read file!");
+			e.printStackTrace();
 			System.exit(1);
 		}
 

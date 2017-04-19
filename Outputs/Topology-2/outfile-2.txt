@@ -1,0 +1,10 @@
+Routing Table for Node No. 2 at Time 40
+Dest Path      Cost 
+0    2-1-0     10   
+1    2-1       5    
+2    2         0    
+3    2-3       6    
+4    2-3-4     12   
+5    2-3-4-5   17   
+6    2-1-0-7-6 20   
+7    2-1-0-7   15   

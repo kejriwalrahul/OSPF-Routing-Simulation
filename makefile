@@ -2,7 +2,7 @@ all:
 	javac -d bin/ Code/simulator.java
 
 run:
-	cd bin && java simulator -i 1 -f ../Input/ipfile
+	cd bin && java simulator -i $(i) -f ../Input/ipfile -d
 
 # ----------------------------------------
 # Run sample nodes with default parameters
