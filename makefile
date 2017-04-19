@@ -4,19 +4,22 @@ all:
 run:
 	cd bin && java simulator -i 1 -f ../Input/ipfile
 
-rund:
+# ----------------------------------------
+# Run sample nodes with default parameters
+
+run_n1:
 	cd bin && java simulator -i 1 -f ../Input/ipfile -d
 
-rund2:
+run_n2:
 	cd bin && java simulator -i 2 -f ../Input/ipfile -d
 
-rund3:
+run_n3:
 	cd bin && java simulator -i 3 -f ../Input/ipfile -d
 
-rund4:
+run_n4:
 	cd bin && java simulator -i 4 -f ../Input/ipfile -d
 
-rund5:
+run_n0:
 	cd bin && java simulator -i 0 -f ../Input/ipfile -d
 
 clean:

@@ -241,7 +241,11 @@ class RecvThread extends Thread{
 				Bytizer.convert(reply, 5, recvd_pkt.getPort());
 
 				NodeLink neighborLink = link_info.get(recvd_pkt.getPort()-10000);
-				int new_cost = new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC) +  neighborLink.minC; 
+				
+				int new_cost = neighborLink.minC;
+				if(neighborLink.maxC > neighborLink.minC)
+					new_cost += new Random(System.nanoTime()).nextInt(neighborLink.maxC - neighborLink.minC + 1); 
+				
 				Bytizer.convert(reply, 9, new_cost);
 
 				// Update adj_list fr self node
@@ -500,8 +504,10 @@ class ShortestPathThread extends Thread{
 			}
 
 			/*
-				Step 2: Finding shortest paths
+				Step 2: Finding shortest paths - Djikstras
 			*/
+
+			System.out.println(adj_list);
 
 			// Clear earlier paths
 			for(int i=0; i<nodeNum; i++)
